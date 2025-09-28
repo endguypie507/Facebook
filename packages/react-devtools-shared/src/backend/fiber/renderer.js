@@ -6552,9 +6552,6 @@ export function attach(
       rootType = fiberRoot._debugRootType;
     }
 
-    const isTimedOutSuspense =
-      tag === SuspenseComponent && memoizedState !== null;
-
     let isErrored = false;
     if (isErrorBoundary(fiber)) {
       // if the current inspected element is an error boundary,
@@ -6626,7 +6623,7 @@ export function attach(
     if (
       fiberInstance.suspenseNode !== null &&
       fiberInstance.suspenseNode.hasUnknownSuspenders &&
-      !isTimedOutSuspense
+      !isSuspended
     ) {
       // Something unknown threw to suspended this boundary. Let's figure out why that might be.
       if (renderer.bundleType === 0) {
@@ -6664,7 +6661,7 @@ export function attach(
         supportsTogglingSuspense &&
         hasSuspenseBoundary &&
         // If it's showing the real content, we can always flip fallback.
-        (!isTimedOutSuspense ||
+        (!isSuspended ||
           // If it's showing fallback because we previously forced it to,
           // allow toggling it back to remove the fallback override.
           forceFallbackForFibers.has(fiber) ||
