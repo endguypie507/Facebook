@@ -205,6 +205,11 @@ export default function InspectedElementWrapper(_: Props): React.Node {
     );
   }
 
+  let fullName = element.displayName || '';
+  if (element.nameProp !== null) {
+    fullName += ' "' + element.nameProp + '"';
+  }
+
   return (
     <div
       className={styles.InspectedElement}
@@ -228,8 +233,8 @@ export default function InspectedElementWrapper(_: Props): React.Node {
                 ? `${styles.ComponentName} ${styles.StrictModeNonCompliantComponentName}`
                 : styles.ComponentName
             }
-            title={element.displayName}>
-            {element.displayName}
+            title={fullName}>
+            {fullName}
           </div>
         </div>
 
@@ -256,18 +261,21 @@ export default function InspectedElementWrapper(_: Props): React.Node {
             <ButtonIcon type="error" />
           </Toggle>
         )}
-        {canToggleSuspense && (
+        {canToggleSuspense || isSuspended ? (
           <Toggle
             isChecked={isSuspended}
+            isDisabled={!canToggleSuspense}
             onChange={toggleSuspended}
             title={
               isSuspended
-                ? 'Unsuspend the selected component'
+                ? canToggleSuspense
+                  ? 'Unsuspend the selected component'
+                  : 'This boundary is still suspended'
                 : 'Suspend the selected component'
             }>
             <ButtonIcon type="suspend" />
           </Toggle>
-        )}
+        ) : null}
         {store.supportsInspectMatchingDOMElement && (
           <Button
             onClick={highlightElement}
