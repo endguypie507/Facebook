@@ -12,6 +12,8 @@
 
 import {patchSetImmediate} from '../../../../scripts/jest/patchSetImmediate';
 
+const path = require('path');
+
 global.ReadableStream =
   require('web-streams-polyfill/ponyfill/es6').ReadableStream;
 
@@ -88,12 +90,25 @@ describe('ReactFlightDOMNode', () => {
     );
   }
 
-  function normalizeCodeLocInfo(str) {
+  const repoRoot = path.resolve(__dirname, '../../../../');
+
+  function normalizeCodeLocInfo(str, {preserveLocation = false} = {}) {
     return (
       str &&
-      str.replace(/^ +(?:at|in) ([\S]+)[^\n]*/gm, function (m, name) {
-        return '    in ' + name + (/\d/.test(m) ? ' (at **)' : '');
-      })
+      str.replace(
+        /^ +(?:at|in) ([\S]+) ([^\n]*)/gm,
+        function (m, name, location) {
+          return (
+            '    in ' +
+            name +
+            (/\d/.test(m)
+              ? preserveLocation
+                ? ' ' + location.replace(repoRoot, '')
+                : ' (at **)'
+              : '')
+          );
+        },
+      )
     );
   }
 
@@ -891,6 +906,157 @@ describe('ReactFlightDOMNode', () => {
           '\n    in Component (at **)' +
           '\n    in App (at **)',
       );
+    } else {
+      expect(ownerStack).toBeNull();
+    }
+  });
+
+  // @gate enableHalt && enableAsyncDebugInfo
+  it('includes deeper location for aborted hanging promises', async () => {
+    const serverRenderAbortController = new AbortController();
+    const serverCleanupAbortController = new AbortController();
+
+    serverRenderAbortController.signal.addEventListener('abort', () => {
+      serverCleanupAbortController.abort();
+    });
+
+    function createHangingPromise(signal) {
+      return new Promise((resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason));
+      });
+    }
+
+    async function Component({promise}) {
+      await promise;
+      return null;
+    }
+
+    const promise = createHangingPromise(serverCleanupAbortController.signal);
+
+    function App() {
+      return ReactServer.createElement(
+        'html',
+        null,
+        ReactServer.createElement(
+          'body',
+          null,
+          ReactServer.createElement(
+            ReactServer.Suspense,
+            {fallback: 'Loading...'},
+            ReactServer.createElement(Component, {promise}),
+          ),
+        ),
+      );
+    }
+
+    const errors = [];
+
+    const {pendingResult} = await serverAct(async () => {
+      // destructure trick to avoid the act scope from awaiting the returned value
+      return {
+        pendingResult: ReactServerDOMStaticServer.unstable_prerender(
+          ReactServer.createElement(App, null),
+          webpackMap,
+          {
+            signal: serverRenderAbortController.signal,
+            onError(error) {
+              errors.push(error);
+            },
+            filterStackFrame,
+          },
+        ),
+      };
+    });
+
+    await serverAct(
+      () =>
+        new Promise(resolve => {
+          setImmediate(() => {
+            serverRenderAbortController.abort();
+            resolve();
+          });
+        }),
+    );
+
+    const {prelude} = await pendingResult;
+
+    expect(errors).toEqual([]);
+
+    function ClientRoot({response}) {
+      return use(response);
+    }
+
+    const prerenderResponse = ReactServerDOMClient.createFromReadableStream(
+      await createBufferedUnclosingStream(prelude),
+      {
+        serverConsumerManifest: {
+          moduleMap: null,
+          moduleLoading: null,
+        },
+      },
+    );
+
+    let componentStack;
+    let ownerStack;
+
+    const clientAbortController = new AbortController();
+
+    const fizzPrerenderStreamResult = ReactDOMFizzStatic.prerender(
+      React.createElement(ClientRoot, {response: prerenderResponse}),
+      {
+        signal: clientAbortController.signal,
+        onError(error, errorInfo) {
+          componentStack = errorInfo.componentStack;
+          ownerStack = React.captureOwnerStack
+            ? React.captureOwnerStack()
+            : null;
+        },
+      },
+    );
+
+    await await serverAct(
+      async () =>
+        new Promise(resolve => {
+          setImmediate(() => {
+            clientAbortController.abort();
+            resolve();
+          });
+        }),
+    );
+
+    const fizzPrerenderStream = await fizzPrerenderStreamResult;
+    const prerenderHTML = await readWebResult(fizzPrerenderStream.prelude);
+
+    expect(prerenderHTML).toContain('Loading...');
+
+    if (__DEV__) {
+      expect(normalizeCodeLocInfo(componentStack, {preserveLocation: true}))
+        .toMatchInlineSnapshot(`
+        "
+            in Component (file:///packages/react-server-dom-webpack/src/__tests__/ReactFlightDOMNode-test.js:930:7)
+            in Suspense
+            in body
+            in html
+            in App (file:///packages/react-server-dom-webpack/src/__tests__/ReactFlightDOMNode-test.js:946:25)
+            in ClientRoot (/packages/react-server-dom-webpack/src/__tests__/ReactFlightDOMNode-test.js:985:54)"
+      `);
+    } else {
+      expect(normalizeCodeLocInfo(componentStack)).toMatchInlineSnapshot(`
+        "
+            in Suspense
+            in body
+            in html
+            in ClientRoot (at **)"
+      `);
+    }
+
+    if (__DEV__) {
+      expect(normalizeCodeLocInfo(ownerStack, {preserveLocation: true}))
+        .toMatchInlineSnapshot(`
+        "
+            in Component (file:///packages/react-server-dom-webpack/src/__tests__/ReactFlightDOMNode-test.js:930:7)
+            in App (file:///packages/react-server-dom-webpack/src/__tests__/ReactFlightDOMNode-test.js:946:25)"
+      `);
     } else {
       expect(ownerStack).toBeNull();
     }
